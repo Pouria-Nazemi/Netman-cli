@@ -1,41 +1,73 @@
 #!/bin/bash
 
-menu() {
-  echo "
-
-  "
-  echo " Welcome to netman-cli"
-  echo "----------------"
-  echo "Choose the number of option you want: "
-  echo "1. Provide backup of the current nftables"
-  echo "2. Restore last backup"
-  echo "3. Create Table"
-  echo "4. Remove Table"
-  echo "5. Add chain"
-  echo "6. Remove a chain"
-  echo "7. add rule"
-  echo "8. remove rule"
-  echo "9. Add nat rules"
-  echo "10. Show all tables"
-  echo "11. Show table by name"
-}
-
-get_backup() {
+get_nft_backup() {
     sudo cp /etc/nftables.conf /etc/nftables.conf.backup
     echo "A backup of nftables.conf saved in -- /etc/nftables.conf.backup --"
     sleep 0.5
 }
 
-restore_backup() {
+restore_nft_backup() {
     file_path="/etc/nftables.conf.backup" 
 
     if [ -f "$file_path" ]; then
        sudo mv /etc/nftables.conf.backup /etc/nftables.conf
-       echo "The last Backup Restored."
+       echo "The last Backup of nftables config Restored."
     else
        echo "No backup file found!"
 fi
     sleep 0.5
+}
+
+get_DNS_backup() {
+    sudo cp /etc/resolv.conf /etc/resolv.conf.bak
+    echo "A backup of DNS config saved in -- /etc/resolv.conf.bak --"
+    sleep 0.5
+}
+restore_DNS_backup(){
+    sudo mv /etc/resolv.conf.bak /etc/resolv.conf
+    echo "The last Backup of DNS config Restored."
+    sleep 0.5
+}
+
+change_dns_permanent() {
+    read -p "Enter the new DNS IP: " dns_ip
+    if ! validate_ip "$dns_ip"; then
+        echo "IP: '$dns_ip' is not valid."
+        return
+        if check_dns "dns_ip"; then
+            echo "$dns_ip does not respona as DNS server"
+            return
+        else
+            echo "nameserver $dns_ip" | sudo tee /etc/resolv.conf > /dev/null
+            echo "DNS settings changed permanently."
+
+        fi
+    fi
+    
+}
+
+change_dns_temporary() {
+    read -p "Enter the new DNS IP: " dns_ip
+    if ! validate_ip "$dns_ip"; then
+        echo "IP: '$dns_ip' is not valid."
+        return
+    elif ! check_dns "dns_ip"; then
+            echo "$dns_ip does not response as DNS server"
+            return
+    else
+            sudo systemd-resolve --set-dns=$dns_ip --temporary
+            echo "Temporary DNS settings changed."
+
+    fi
+}
+
+check_dns() {
+    dns_ip=$1
+    if nslookup -type=SOA google.com $dns_ip | grep "No answer" >/dev/null; then
+        return 0  # DNS server is not reachable
+    else
+        return 1  # DNS server is reachable
+    fi
 }
 
 create_nftable() {
@@ -375,14 +407,40 @@ add_rule(){
     sudo nft "$rule"
 }
 
+menu() {
+  echo "
+  
+  
+    "
+  echo " Welcome to netman-cli"
+  echo "----------------"
+  echo "Choose the number of option you want: "
+  echo "1. Provide backup of the current nftables"
+  echo "2. Restore last backup of nftable"
+  echo "3. Create Table"
+  echo "4. Remove Table"
+  echo "5. Add chain"
+  echo "6. Remove a chain"
+  echo "7. add rule"
+  echo "8. remove rule"
+  echo "9. Add nat rules"
+  echo "10. Show all tables"
+  echo "11. Show table by name"
+  echo "12. DNS change temporary"
+  echo "13. DNS change permenantly"
+  echo "14. Backup DNS config"
+  echo "15. Restore last backup of DNS config"
+
+}
+
 while true; do
   menu
 
   read -p "Enter your choice: " choice
 
   case $choice in
-    1) get_backup ;;
-    2) restore_backup ;;
+    1) get_nft_backup ;;
+    2) restore_nft_backup ;;
     3) create_nftable ;;
     4) remove_nftable ;;
     5) add_chain_handler ;;
@@ -392,7 +450,11 @@ while true; do
     9) nat_rules_menu ;;
     10) show_all_tables ;;
     11) show_specified_table ;;
-    12) exit ;;
+    12) change_dns_temporary ;;
+    13) change_dns_permanent ;;
+    14) get_DNS_backup ;;
+    15) restore_DNS_backup ;;
     *) display_help ;;
   esac
 done
+
