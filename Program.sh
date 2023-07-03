@@ -402,6 +402,80 @@ change_hostname() {
 
 }
 
+select_interface() {
+    # List all interfaces
+    interfaces=$(ip link show | awk -F': ' '/^[0-9]+:/{print $2}')
+
+    # Prompt the user to select an interface
+    PS3="Select an interface: "
+    select interface in $interfaces; do
+        if [[ -n "$interface" ]]; then
+            echo "Selected interface: $interface"
+            break
+        else
+            echo "Invalid option. Please try again."
+        fi
+    done
+    echo "$interface"
+}
+
+
+set_permanent_ip(){
+    INTERFACE=$(select_interface)
+    read -p "Enter your desired IP address: " IP_ADDRESS
+    if ! validate_ip "$IP_ADDRESS"; then
+        echo "IP: '$IP_ADDRESS' is not valid."
+        return
+    fi
+    read -p "Enter netmask: " NETMASK
+    read -p "Enter Gateway IP:" GATEWAY
+
+    if ! validate_ip "$GATEWAY"; then
+        echo "IP: '$GATEWAY' is not valid."
+        return
+    fi
+
+    # Backup the original file
+    sudo cp /etc/network/interfaces /etc/network/interfaces.bak
+
+    # Configure the interface
+    echo "
+    auto $INTERFACE
+    iface $INTERFACE inet static
+        address $IP_ADDRESS
+        netmask $NETMASK
+        gateway $GATEWAY
+    " | sudo tee -a /etc/network/interfaces > /dev/null
+
+    # Restart networking service
+    sudo systemctl restart networking.service
+
+    echo "IP address $IP_ADDRESS permanently set on interface $INTERFACE."
+}
+
+set_temporary_ip() {
+    INTERFACE=$(select_interface)
+    read -p "Enter your desired IP address: " IP_ADDRESS
+    if ! validate_ip "$IP_ADDRESS"; then
+        echo "IP: '$IP_ADDRESS' is not valid."
+        return
+    fi
+
+    read -p "Enter netmask: " NETMASK
+    read -p "Enter Gateway IP:" GATEWAY
+
+    if ! validate_ip "$GATEWAY"; then
+        echo "IP: '$GATEWAY' is not valid."
+        return
+    fi
+
+    if sudo ifconfig $INTERFACE $IP_ADDRESS netmask $NETMASK; then
+        echo "IP address $IP_ADDRESS temporarily set on interface $INTERFACE."
+    else
+        echo "An error occurred while configuring the interface."
+    fi
+}
+
 menu() {
   echo "
   
@@ -425,8 +499,10 @@ menu() {
   echo "13. Backup DNS config"
   echo "14. Restore last backup of DNS config"
   echo "15. change hostname"
-
+  echo "16. permenant static ip config on a interface"
+  echo "17. temproray static ip config on a interface"
 }
+
 
 while true; do
   menu
@@ -449,6 +525,8 @@ while true; do
     13) get_DNS_backup ;;
     14) restore_DNS_backup ;;
     15) change_hostname ;;
+    16) set_permanent_ip ;;
+    17) set_temporary_ip ;;
     *) display_help ;;
   esac
 done
