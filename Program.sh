@@ -29,41 +29,48 @@ restore_DNS_backup(){
     sleep 0.5
 }
 
-change_dns_permanent() {
+change_dns() {
     read -p "Enter the new DNS IP: " dns_ip
-    if ! validate_ip "$dns_ip"; then
-        echo "IP: '$dns_ip' is not valid."
-        return
-        if check_dns "dns_ip"; then
-            echo "$dns_ip does not respona as DNS server"
-            return
-        else
-            echo "nameserver $dns_ip" | sudo tee /etc/resolv.conf > /dev/null
-            echo "DNS settings changed permanently."
-
-        fi
-    fi
-    
-}
-
-change_dns_temporary() {
-    read -p "Enter the new DNS IP: " dns_ip
-    if ! validate_ip "$dns_ip"; then
+    if  ! validate_ip "$dns_ip"; then
         echo "IP: '$dns_ip' is not valid."
         return
     elif ! check_dns "dns_ip"; then
             echo "$dns_ip does not response as DNS server"
             return
-    else
-            sudo systemd-resolve --set-dns=$dns_ip --temporary
-            echo "Temporary DNS settings changed."
+        else
+            echo "nameserver" "$dns_ip" | sudo tee /etc/resolv.conf > /dev/null
+            echo "DNS settings changed."
 
     fi
+    
+}
+
+
+validate_ip() {
+    local ip_address=$1
+    
+    # Split the IP address into octets
+    IFS='.' read -ra octets <<< "$ip_address"
+    
+    # Check if there are 4 octets
+    if [ "${#octets[@]}" -ne 4 ]; then
+        return 1
+    fi
+    
+    # Validate each octet
+    for octet in "${octets[@]}"; do
+        # Ensure that each octet is a number between 0 and 255
+        if ! [[ "$octet" =~ ^[0-9]+$ ]] || [ "$octet" -lt 0 ] || [ "$octet" -gt 255 ]; then
+            return 1
+        fi
+    done
+    
+    return 0
 }
 
 check_dns() {
     dns_ip=$1
-    if nslookup -type=SOA google.com $dns_ip | grep "No answer" >/dev/null; then
+    if ! nslookup -retry=1 google.com $dns_ip >/dev/null; then
         return 0  # DNS server is not reachable
     else
         return 1  # DNS server is reachable
@@ -292,27 +299,6 @@ validate_chain() {
   nft list chains "$table_name" | grep -q "chain $chain_name "
 }
 
-validate_ip() {
-    local ip_address=$1
-    
-    # Split the IP address into octets
-    IFS='.' read -ra octets <<< "$ip_address"
-    
-    # Check if there are 4 octets
-    if [ "${#octets[@]}" -ne 4 ]; then
-        return 1
-    fi
-    
-    # Validate each octet
-    for octet in "${octets[@]}"; do
-        # Ensure that each octet is a number between 0 and 255
-        if ! [[ "$octet" =~ ^[0-9]+$ ]] || [ "$octet" -lt 0 ] || [ "$octet" -gt 255 ]; then
-            return 1
-        fi
-    done
-    
-    return 0
-}
 
 
 show_all_tables(){
@@ -407,6 +393,15 @@ add_rule(){
     sudo nft "$rule"
 }
 
+change_hostname() {
+    read -p "Enter your desired hostname: " new_hostname
+    sudo echo "$new_hostname" | sudo tee /etc/hostname > /dev/null
+    sudo sed -i "s/127.0.1.1.*/127.0.1.1\t$new_hostname/g" /etc/hosts
+    sudo hostnamectl set-hostname "$new_hostname"
+    echo "Hostname changed to '$new_hostname'. Reboot is needed for changes to take effect."
+
+}
+
 menu() {
   echo "
   
@@ -426,10 +421,10 @@ menu() {
   echo "9. Add nat rules"
   echo "10. Show all tables"
   echo "11. Show table by name"
-  echo "12. DNS change temporary"
-  echo "13. DNS change permenantly"
-  echo "14. Backup DNS config"
-  echo "15. Restore last backup of DNS config"
+  echo "12. DNS change"
+  echo "13. Backup DNS config"
+  echo "14. Restore last backup of DNS config"
+  echo "15. change hostname"
 
 }
 
@@ -450,10 +445,10 @@ while true; do
     9) nat_rules_menu ;;
     10) show_all_tables ;;
     11) show_specified_table ;;
-    12) change_dns_temporary ;;
-    13) change_dns_permanent ;;
-    14) get_DNS_backup ;;
-    15) restore_DNS_backup ;;
+    12) change_dns ;;
+    13) get_DNS_backup ;;
+    14) restore_DNS_backup ;;
+    15) change_hostname ;;
     *) display_help ;;
   esac
 done
