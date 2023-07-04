@@ -447,9 +447,11 @@ set_permanent_ip(){
         gateway $GATEWAY
     " | sudo tee -a /etc/network/interfaces > /dev/null
 
+    sudo dhclient -r $INTERFACE
+
     # Restart networking service
     sudo systemctl restart networking.service
-
+    sudo dhclient -r $INTERFACE
     echo "IP address $IP_ADDRESS permanently set on interface $INTERFACE."
 }
 
@@ -471,9 +473,159 @@ set_temporary_ip() {
 
     if sudo ifconfig $INTERFACE $IP_ADDRESS netmask $NETMASK; then
         echo "IP address $IP_ADDRESS temporarily set on interface $INTERFACE."
+        sudo dhclient -r $INTERFACE
     else
         echo "An error occurred while configuring the interface."
     fi
+}
+
+set_dhcp_temporarily() {
+    interface=$(select_interface)
+    sudo dhclient "$interface"
+}
+
+set_dhcp_permanently() {
+    interface=$(select_interface)
+    config_file="/etc/netplan/01-netcfg.yaml"  # Adjust this path based on your Ubuntu version
+
+    # Check if the config file exists
+    if [ -f "$config_file" ]; then
+        # Modify the config file to enable DHCP
+        sudo sed -i "s/dhcp4: no/dhcp4: yes/" "$config_file"
+
+        # Apply the new configuration
+        sudo netplan apply
+        echo "DHCP has been set permanently for $interface."
+    else
+        echo "Netplan configuration file not found."
+    fi
+}
+
+add_temporary_root_user() {
+    read -p "Enter username for temporary root access: " username
+    read -s -p "Enter password for $username: " password
+    echo ""
+
+    # Add user with root privileges
+    useradd -ou 0 -g 0 -m $username
+
+    # Set the password for the user
+    echo "$username:$password" | chpasswd
+
+    echo "Temporary root user ($username) added successfully."
+}
+
+ssh_restriction(){
+        # Read IP or range of IPs from user input
+    read -p "Enter the IP address or range of IPs (CIDR notation) to allow SSH access: " IP_OR_RANGE
+    
+    SSH_PORT="22"
+
+    nft insert rule filter input ip saddr $IP_OR_RANGE tcp dport $SSH_PORT counter accept
+
+# Save the ruleset with the new rule appended
+    nft list ruleset | sed '$d' > /etc/nftables.conf.tmp
+    echo >> /etc/nftables.conf.tmp
+    echo 'include "/etc/nftables.conf"' >> /etc/nftables.conf.tmp
+
+    # Replace the original configuration file with the modified temporary file
+    mv /etc/nftables.conf.tmp /etc/nftables.conf
+}
+
+ip_route_temp(){
+    read -p "Enter the destination network (CIDR notation): " destination_network
+    read -p "Enter the gateway IP: " gateway_ip
+
+    # Add the temporary static route
+    ip route add $destination_network via $gateway_ip
+
+    # Verify the added route
+    if [[ $? -eq 0 ]]; then
+        echo "Temporary static route added successfully:"
+        ip route show $destination_network
+    else
+        echo "Failed to add temporary static route."
+    fi
+}
+
+ip_route_perm(){
+
+    read -p "Enter the destination network (CIDR notation): " destination_network
+    read -p "Enter the gateway IP: " gateway_ip
+
+    # Define variables
+    config_file="/etc/network/interfaces"
+    backup_file="${config_file}.bak"
+
+    # Backup the original config file
+    cp $config_file $backup_file
+
+    # Append the static route configuration to the config file
+    echo "up route add -net $destination_network gw $gateway_ip" >> $config_file
+
+    # Restart the network service
+    service networking restart
+
+    # Check if the restart was successful
+    if [[ $? -eq 0 ]]; then
+        echo "Permanent static route added successfully."
+    else
+        echo "Failed to add permanent static route."
+        # Restore the backup file
+        cp $backup_file $config_file
+        service networking restart
+        echo "Network service restarted with the original configurations."
+    fi
+
+}
+
+select_ip_route(){
+    echo "Available IP Routes:"
+    ip route show
+    echo ""
+
+    # Prompt the user to select a route
+    read -p "Enter the number corresponding to the IP route you want to delete: " selected_num
+
+    selected_route=$(ip route show | awk 'NR=='$selected_num' {print $0}')
+
+    if [[ -z "$selected_route" ]]; then
+        echo "Invalid selection. Exiting."
+        exit 1
+    fi
+    echo "Selected Route: $selected_route"
+    echo "Select Deletion Type:"
+    echo "1. Permanent Deletion"
+    echo "2. Temporary Deletion"
+
+    read -p "Enter your choice (1 or 2): " deletion_type
+
+    case $deletion_type in
+        1)
+            # Delete the selected route permanently
+            delete_route_permanent "$selected_route"
+            ;;
+        2)
+            # Delete the selected route temporarily
+            delete_route_temporary "$selected_route"
+            ;;
+        *)
+            echo "Invalid choice. Exiting."
+            retun 1
+            ;;
+    esac
+}
+
+delete_route_temporary() {
+    local route="$1"
+    sudo ip route delete "$route"
+    echo "Route $route has been temporarily deleted."
+}
+
+delete_route_permanent() {
+    local route="$1"
+    sudo ip route del "$route"
+    echo "Route $route has been permanently deleted."
 }
 
 menu() {
@@ -501,6 +653,13 @@ menu() {
   echo "15. change hostname"
   echo "16. permenant static ip config on a interface"
   echo "17. temproray static ip config on a interface"
+  echo "18. dhcp enable on a interface permenantly"
+  echo "19. dhcp enable on a interface temproray"
+  echo "20. add permenant root"
+  echo "21. add temproray root"
+  echo "22. delete a ip route"
+  echo "23. ssh restriction"
+
 }
 
 
@@ -508,7 +667,6 @@ while true; do
   menu
 
   read -p "Enter your choice: " choice
-
   case $choice in
     1) get_nft_backup ;;
     2) restore_nft_backup ;;
@@ -527,6 +685,13 @@ while true; do
     15) change_hostname ;;
     16) set_permanent_ip ;;
     17) set_temporary_ip ;;
+    18) set_dhcp_permanently ;;
+    19) set_dhcp_temporarily ;;
+    20) ip_route_perm ;;
+    21) ip_route_temp ;;
+    22) select_ip_route ;; 
+    23) ssh_restriction ;;
+
     *) display_help ;;
   esac
 done
