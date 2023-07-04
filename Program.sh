@@ -54,7 +54,7 @@ change_dns() {
     if  ! validate_ip "$dns_ip"; then
         echo "IP: '$dns_ip' is not valid."
         return
-    elif ! check_dns "dns_ip"; then
+    elif ! check_dns $dns_ip; then
             echo "$dns_ip does not response as DNS server"
             return
         else
@@ -63,10 +63,10 @@ change_dns() {
 
     fi
 }
-
+# check dns server response
 check_dns() {
     dns_ip=$1
-    if ! nslookup -retry=1 google.com $dns_ip >/dev/null; then
+    if nslookup -retry=1 google.com $dns_ip >/dev/null; then
         return 0  # not reachable
     else
         return 1  # reachable
@@ -77,17 +77,16 @@ check_dns() {
 ##### Hostname
 
 change_hostname() {
-    read -p "Enter your desired hostname: " new_hostname
-    sudo echo "$new_hostname" | sudo tee /etc/hostname > /dev/null
-    sudo sed -i "s/127.0.1.1.*/127.0.1.1\t$new_hostname/g" /etc/hosts
-    sudo hostnamectl set-hostname "$new_hostname"
+    read -r -p "Enter your desired hostname: " new_hostname
+    sudo hostnamectl hostname "$new_hostname"
+    sudo sed -i "s/127.0.1.1.*$/127.0.1.1\t$new_hostname/g" /etc/hosts
     echo "Hostname changed to '$new_hostname'. Reboot is needed for changes to take effect."
 }
 
 #####
 ##### IP set on interface
 
-
+# select a interface from available interfaces on machine
 select_interface() {
     # List all interfaces
     interfaces=$(ip link show | awk -F': ' '/^[0-9]+:/{print $2}')
@@ -96,16 +95,15 @@ select_interface() {
     PS3="Select an interface: "
     select interface in $interfaces; do
         if [[ -n "$interface" ]]; then
-            echo "Selected interface: $interface"
+            echo "$interface"
             break
         else
             echo "Invalid option. Please try again."
         fi
     done
-    echo "$interface"
 }
 
-
+# set permanent IP on a interface
 set_permanent_ip(){
     INTERFACE=$(select_interface)
     read -p "Enter your desired IP address: " IP_ADDRESS
@@ -114,12 +112,6 @@ set_permanent_ip(){
         return
     fi
     read -p "Enter netmask: " NETMASK
-    read -p "Enter Gateway IP:" GATEWAY
-
-    if ! validate_ip "$GATEWAY"; then
-        echo "IP: '$GATEWAY' is not valid."
-        return
-    fi
 
     # Backup the original file
     # sudo cp /etc/network/interfaces /etc/network/interfaces.bak
@@ -138,10 +130,10 @@ set_permanent_ip(){
 
     # Restart network service
     sudo systemctl restart networking.service
-    sudo dhclient -r $INTERFACE
     echo "IP address $IP_ADDRESS permanently set on interface $INTERFACE."
 }
 
+# set temporary IP on a interface
 set_temporary_ip() {
     INTERFACE=$(select_interface)
     read -p "Enter your desired IP address: " IP_ADDRESS
@@ -151,19 +143,10 @@ set_temporary_ip() {
     fi
 
     read -p "Enter netmask: " NETMASK
-    read -p "Enter Gateway IP:" GATEWAY
 
-    if ! validate_ip "$GATEWAY"; then
-        echo "IP: '$GATEWAY' is not valid."
-        return
-    fi
-
-    if sudo ifconfig $INTERFACE $IP_ADDRESS netmask $NETMASK; then
-        echo "IP address $IP_ADDRESS temporarily set on interface $INTERFACE."
-        sudo dhclient -r $INTERFACE
-    else
-        echo "An error occurred while configuring the interface."
-    fi
+    sudo ip address flush $INTERFACE
+    sudo ip address add $IP_ADDRESS/$NETMASK dev $INTERFACE
+    echo "IP address $IP_ADDRESS temporarily set on interface $INTERFACE."
 }
 
 #####
@@ -176,16 +159,19 @@ set_dhcp_temporarily() {
 
 set_dhcp_permanently() {
     interface=$(select_interface)
-    config_file="/etc/netplan/01-netcfg.yaml"  # TODO check address
+    # Create a new network interface configuration file
+sudo tee /etc/netplan/00-netcfg.yaml > /dev/null <<EOT
+network:
+  version: 2
+  renderer: networkd
+  ethernets:
+    ${interface}:
+      dhcp4: true
+EOT
 
-    if [ -f "$config_file" ]; then
-        sudo sed -i "s/dhcp4: no/dhcp4: yes/" "$config_file"
 
-        sudo netplan apply
-        echo "DHCP has been set permanently for $interface."
-    else
-        echo "Netplan configuration file not found."
-    fi
+    sudo netplan apply
+    echo "DHCP has been set permanently for $interface."
 }
 
 #####
@@ -194,11 +180,11 @@ ip_route_temp(){
     read -p "Enter the destination network (CIDR notation): " destination_network
     read -p "Enter the gateway IP: " gateway_ip
 
-    ip route add $destination_network via $gateway_ip
+    sudo ip route add $destination_network via $gateway_ip
 
     if [[ $? -eq 0 ]]; then
         echo "Temporary static route added successfully:"
-        ip route show $destination_network
+        sudo ip route show $destination_network
     else
         echo "Failed to add temporary static route."
     fi
@@ -277,8 +263,8 @@ delete_route_temporary() {
 
 delete_route_permanent() {
     local route="$1"
-    sudo ip route del "$route"
-    echo "Route $route has been permanently deleted."
+    sudo sed -i "/$(cut -d ' ' -f 1 $route)/d" /etc/network/interfaces && echo "Route $route has been permanently deleted." && return 0 
+    echo "Error: Route $route not deleted" && return 1
 }
 #####
 
@@ -292,13 +278,7 @@ ssh_restriction(){
     SSH_PORT="22"
 
     nft insert rule filter input ip saddr $IP_OR_RANGE tcp dport $SSH_PORT counter accept
-
-    # Save the ruleset with the new rule appended
-    nft list ruleset | sed '$d' > /etc/nftables.conf.tmp
-    echo >> /etc/nftables.conf.tmp
-    echo 'include "/etc/nftables.conf"' >> /etc/nftables.conf.tmp
-    mv /etc/nftables.conf.tmp /etc/nftables.conf
-}
+ }
 
 #####
 ##### flush all rules
@@ -311,9 +291,9 @@ flush_nftables(){
 ##### redirection 4.2.2.4 dns to 1.1.1.1
 
 redirection_udp_dns(){
-    nft add table inet redirectDns
-    nft add chain inet redirectDns mychain { type filter hook prerouting priority -150 \; }
-    nft add rule inet redirectDns mychain ip daddr 4.2.2.4 udp dport 53 counter redirect to :53-1.1.1.1
+    sudo nft add table inet redirectDns
+    sudo nft add chain inet redirectDns mychain { type filter hook prerouting priority -150 \; }
+    sudo nft add rule inet redirectDns mychain ip daddr 4.2.2.4 udp dport 53 counter redirect to :53-1.1.1.1
 
     echo "redirection done"
 }
@@ -329,11 +309,29 @@ restrict_Internet(){
         interface=$(select_interface)
     fi
 
-    nft add table inet filter
-    nft add chain inet filter input { type filter hook input priority 0 \; }
-    nft add chain inet filter output { type filter hook output priority 0 \; }
-    nft add rule inet filter input iifname "$internet_interface" drop
-    nft add rule inet filter output oifname "$internet_interface" drop
+    sudo nft add table inet filter
+    sudo nft add chain inet filter input \{ type filter hook input priority 0 \; \}
+    sudo nft add chain inet filter output \{ type filter hook output priority 0 \; \}
+    sudo nft add rule inet filter input iifname "$internet_interface" drop
+    sudo nft add rule inet filter output oifname "$internet_interface" drop
+
+    echo "nftables rules configured successfully."
+
+}
+restrict_user_Internet(){
+    read -p "Enter username you want to disable Internet access": username
+    # Detect the internal network interface
+    internet_interface=$(ip route | awk '/default/ {print $5}')
+    if [[ -z "$internet_interface" ]]; then
+        echo "Unable to detect internal network interface. Please configure it manually."
+        interface=$(select_interface)
+    fi
+
+    sudo nft add table inet filter
+    sudo nft add chain inet filter input \{ type filter hook input priority 0 \; \}
+    sudo nft add chain inet filter output \{ type filter hook output priority 0 \; \}
+    sudo nft add rule inet filter input iifname "$internet_interface" skuid $(id -u $username) drop
+    sudo nft add rule inet filter output oifname "$internet_interface" skuid $(id -u $username) drop
 
     echo "nftables rules configured successfully."
 
@@ -368,13 +366,13 @@ restore_nft_backup() {
 #####
 ##### show table
 show_all_tables(){
-    nft list ruleset
+    sudo nft list ruleset
 }
 
 show_specified_table(){
     read -p "Enter the name of the table to show: " table_name
     if validate_table "$table_name"; then
-        nft list ruleset | grep ".*$table_name"
+        sudo nft list table "$table_name"
     else
         echo "Selected table does not exist. Please choose a valid table."
     fi
@@ -386,14 +384,14 @@ create_nftable() {
   echo "Create Table"
   echo "--------------"
   read -p "Enter the table name: " table_name
-  if ! nft list tables | grep -wq "$table_name"; then
+  if ! sudo nft list tables | grep -wq "$table_name"; then
     select family in inet ip ip6; do
         if [[ "$REPLY" =~ ^[1-4]$ ]]; then
             break
         fi
         echo "Wrong input for choosing family"
     done
-    nft add table "$family" "$table_name"
+    sudo nft add table "$family" "$table_name"
     echo "Table '$table_name' created."
   else
     echo "Table '$table_name' already exists."
@@ -404,10 +402,10 @@ remove_nftable() {
 
     read -p "Enter the table name: " table_name
 
-    if nft list tables | grep -q "$table_name"; then
+    if sudo nft list tables | grep -q "$table_name"; then
 
-        nft flush table "$table_name"
-        nft delete table "$table_name"
+        sudo nft flush table "$table_name"
+        sudo nft delete table "$table_name"
         echo "Successfully removed nftable: $table_name"
     else
         echo "nftable $table_name does not exist."
@@ -426,7 +424,7 @@ add_chain() {
   local policy=$6
 
   
-  nft add chain "$table_name" "$chain_name" { type "$chain_type" hook "$hook" priority "$chain_priority"\; policy "$policy"\; }
+  nft add chain "$table_name" "$chain_name" \{ type "$chain_type" hook "$hook" priority "$chain_priority"\; policy "$policy"\; \}
   
   echo "Successfully added the following chain:"
   echo "---------------------------------------"
@@ -450,11 +448,11 @@ remove_chain() {
 }
 
 add_chain_handler(){
-    tables=$(nft list tables | awk '{print $NF}')
+    tables=$(nft list tables | sed 's/table //')
 
     # select a table
     echo "Select a table: "
-    select table in ${tables[@]}; do
+    select table in "${tables[@]}"; do
     if validate_table "$table"; then
         echo "Selected table: $table"
         break
@@ -470,36 +468,49 @@ add_chain_handler(){
     select chain_type in filter route nat; do
         break
     done
+    
         echo "Select hook:"
+    case $chain_type in
+    "filter")
         select hook in input output forward prerouting postrouting; do
             break
-        done
-
-        # chain priority
-        while true; do
-            read -p "Enter the priority of the chain (default is 0): " chain_priority
-            if [[ $chain_priority =~ ^[0-9]+$ ]]; then
+        done ;;
+    "nat")
+            select hook in input output prerouting postrouting; do
                 break
-            else
-                echo "Invalid chain priority entered. Please provide a numeric value."
-            fi
-        done
-        # chain policy
-        echo "Select policy:"
-        select policy in accept drop; do
+            done ;;
+    "route")
+            select hook in  prerouting forward postrouting; do
+                break
+            done ;;
+    *) echo "wrong chain type input"
+        return ;;
+    esac
+        # chain priority
+    while true; do
+        read -p "Enter the priority of the chain (default is 0): " chain_priority
+        if [[ $chain_priority =~ ^[0-9]+$ ]]; then
             break
-        done
-        # Add the chain to the table
-        add_chain "$table" "$chain_name" "$chain_type" "$hook" "$chain_priority" "$policy"
+        else
+            echo "Invalid chain priority entered. Please provide a numeric value."
+        fi
+    done
+    # chain policy
+    echo "Select policy:"
+    select policy in accept drop; do
+        break
+    done
+    # Add the chain to the table
+    add_chain "$table" "$chain_name" "$chain_type" "$hook" "$chain_priority" "$policy"
 }
 
 remove_chain_handler(){
      # Select table
-        tables=$(nft list tables | awk '{print $NF}')
+        tables=$(nft list tables | sed 's/table //')
 
         # Prompt the user to select a table
         echo "Select a table: "
-        select table in ${tables[@]}; do
+        select table in "${tables[@]}"; do
         if validate_table "$table"; then
             echo "Selected table: $table"
             break
@@ -519,18 +530,17 @@ remove_chain_handler(){
 }
 
 #####
-##### addd rules
-
+##### add rules
 
 add_rule(){
     echo "Add Rule selected!"
     
     # Prompt for user inputs
-    tables=$(nft list tables | awk '{print $NF}')
+    tables=$(nft list tables | sed 's/table //')
 
     # Prompt the user to select a table
     echo "Select a table: "
-    select table in ${tables[@]}; do
+    select table in "${tables[@]}"; do
         if validate_table "$table"; then
             echo "Selected table: $table"
             break
@@ -605,7 +615,6 @@ add_rule(){
 #####
 ##### NAT rules part
 
-
 nat_rules_menu() {
     clear
     echo "Available commands:"
@@ -637,7 +646,7 @@ nat_rules_menu_handler() {
             help_command
             ;;
         6)
-            break
+            return
             ;;
         *)
             echo "Invalid command number. Please try again."
@@ -657,7 +666,7 @@ add_dnat_rule() {
     read -p "Enter the destination port: " destination_port
     read -p "Enter the internal address: " internal_address
     read -p "Enter the internal port: " internal_port
-    nft add rule nat prerouting iif "$interface" tcp dport "$destination_port" counter dnat to "$internal_address":"$internal_port"
+    nft add rule nat prerouting iifname "$interface" tcp dport "$destination_port" counter dnat to "$internal_address":"$internal_port"
     echo "Done!"    
 }
 
@@ -666,7 +675,7 @@ add_port_forwarding_rule() {
     read -p "Enter the external port: " external_port
     read -p "Enter the internal address: " internal_address
     read -p "Enter the internal port: " internal_port
-    nft add rule nat prerouting iif "$interface" tcp dport "$external_port" counter dnat to "$internal_address":"$internal_port"
+    nft add rule nat prerouting iifname "$interface" tcp dport "$external_port" counter dnat to "$internal_address":"$internal_port"
     echo "Done!"
 
 }
@@ -678,82 +687,181 @@ add_masquerade_rule() {
 }
 
 
+####################### Menus ############################
 
-#####
+logo(){
+    echo "
+    _   ________________  ______    _   __   ________    ____
+   / | / / ____/_  __/  |/  /   |  / | / /  / ____/ /   /  _/
+  /  |/ / __/   / / / /|_/ / /| | /  |/ /  / /   / /    / /  
+ / /|  / /___  / / / /  / / ___ |/ /|  /  / /___/ /____/ /   
+/_/ |_/_____/ /_/ /_/  /_/_/  |_/_/ |_/   \____/_____/___/  
 
-menu() {
-  echo "
-  
-  
+
+-----------------------------------------------------------
     "
-  echo " Welcome to netman-cli"
-  echo "----------------"
+}
+menu() {
+  logo
   echo "Choose the number of option you want: "
-  echo "1. Provide backup of the current nftables"
-  echo "2. Restore last backup of nftable"
-  echo "3. Create Table"
-  echo "4. Remove Table"
-  echo "5. Add chain"
-  echo "6. Remove a chain"
-  echo "7. add rule"
-  echo "8. remove rule"
-  echo "9. Add nat rules"
-  echo "10. Show all tables"
-  echo "11. Show table by name"
-  echo "12. DNS change"
-  echo "13. Backup DNS config"
-  echo "14. Restore last backup of DNS config"
-  echo "15. change hostname"
-  echo "16. permenant static ip config on a interface"
-  echo "17. temproray static ip config on a interface"
-  echo "18. dhcp enable on a interface permenantly"
-  echo "19. dhcp enable on a interface temproray"
-  echo "20. add permenant root"
-  echo "21. add temproray root"
-  echo "22. delete a ip route"
-  echo "23. ssh restriction"
-  echo "24. remove all rules of firewall"
-  echo "25. redirect packets of 4.2.2.4:53 to 1.1.1.1:53"
-  echo "26. make Internet unreachable"
-  echo "27. make nftables config permenant"
-
+  echo "1. nftables configuration"
+  echo "2. change DNS setting"
+  echo "3. set IP on the interfaces"
+  echo "4. add or remove ip route"
+  echo "5. enable predefind firewall rules"
+  echo "6. change hostname"
+  echo "7. close the program"
 }
 
+dns_menu(){
 
+    while true; do
+        echo "
+            -------------------------------------------------------------------
+        "
+        echo "1. DNS change"
+        echo "2. Backup DNS config"
+        echo "3. Restore last backup of DNS config"
+        echo "4. return to main menu"
+        read -p "Enter your choice: " choice
+        case $choice in
+            1) change_dns ;;
+            2) get_DNS_backup ;;
+            3) restore_DNS_backup ;;
+            4) main_menu ;;
+            *) echo "Wrong selection input"
+                continue ;;
+        esac
+    done 
+
+}
+nftables_menu(){
+    while true; do
+        echo "
+            -------------------------------------------------------------------
+        "
+        echo "1. Provide backup of the current nftables"
+        echo "2. Restore last backup of nftables"
+        echo "3. Show all current nftables"
+        echo "4. Show nftable by name search"
+        echo "5. Create Table"
+        echo "6. Remove Table"
+        echo "7. Add chain"
+        echo "8. Remove a chain"
+        echo "9. add rule (SOON)"
+        echo "10. remove rule"
+        echo "11. Add nat rules"
+        echo "12. return to main menu"
+        read -p "Enter your choice: " choice
+        case $choice in
+            1) get_nft_backup ;;
+            2) restore_nft_backup ;;
+            3) show_all_tables ;;
+            4) show_specified_table ;;
+            5) create_nftable ;;
+            6) remove_nftable ;;
+            7) add_chain_handler ;;
+            8) remove_chain_handler ;;
+            9) add_rule ;;
+            10) remove_rule ;;
+            11) nat_rules_menu ;;
+            12) main_menu ;;
+            *) echo "Wrong selection input"
+                continue ;;
+        esac
+    done
+}
+
+set_ip_menu(){
+    
+    while true; do
+        echo "
+            -------------------------------------------------------------------
+        "
+        echo "1. permanant static ip config on a interface"
+        echo "2. temporary static ip config on a interface"
+        echo "3. dhcp enable on a interface permenantly"
+        echo "4. dhcp enable on a interface temproray"
+        echo "5. return to main menu"
+        case $choice in
+            1) set_permanent_ip ;;
+            2) set_temporary_ip ;;
+            3) set_dhcp_permanently ;;
+            4) set_dhcp_temporarily ;;
+            5) main_menu ;;
+            *) echo "Wrong selection input"
+                continue ;;
+        esac
+    done
+}
+
+ip_route_menu(){
+
+    while true; do
+        echo "
+            -------------------------------------------------------------------
+        "
+        echo "1. add permenant route"
+        echo "2. add temproray route"
+        echo "3. delete a ip route"
+        echo "4. return to main menu"
+        read -p "Enter your choice: " choice
+        case $choice in
+            1) ip_route_perm ;;
+            2) ip_route_temp ;;
+            3) select_ip_route_to_delete ;; 
+            4) main_menu ;;
+            *) echo "Wrong selection input"
+                continue ;;
+        esac
+    done
+}
+firewall_rules_menu(){
+
+    while true; do
+        echo "
+            -------------------------------------------------------------------
+        "
+        echo "1. ssh restriction"
+        echo "2. remove all rules of firewall"
+        echo "3. redirect packets of 4.2.2.4:53 to 1.1.1.1:53"
+        echo "4. make Internet unreachable"
+        echo "5. make nftables config permanent"
+        echo "6. restrict a user access to the Internet"
+        echo "7. return to main menu"
+        read -p "Enter your choice: " choice
+        case $choice in
+            1) ssh_restriction ;;
+            2) flush_nftables ;;
+            3) redirection_udp_dns ;;
+            4) restrict_Internet ;;
+            5) permanent_nft ;;
+            6) restrict_user_Internet ;;
+            7) main_menu ;;
+            *) echo "Wrong selection input"
+                continue ;;
+        esac
+    done
+}
+
+main_menu(){
 while true; do
-  menu
-
-  read -p "Enter your choice: " choice
-  case $choice in
-    1) get_nft_backup ;;
-    2) restore_nft_backup ;;
-    3) create_nftable ;;
-    4) remove_nftable ;;
-    5) add_chain_handler ;;
-    6) remove_chain_handler ;;
-    7) add_rule ;;
-    8) remove_rule ;;
-    9) nat_rules_menu ;;
-    10) show_all_tables ;;
-    11) show_specified_table ;;
-    12) change_dns ;;
-    13) get_DNS_backup ;;
-    14) restore_DNS_backup ;;
-    15) change_hostname ;;
-    16) set_permanent_ip ;;
-    17) set_temporary_ip ;;
-    18) set_dhcp_permanently ;;
-    19) set_dhcp_temporarily ;;
-    20) ip_route_perm ;;
-    21) ip_route_temp ;;
-    22) select_ip_route_to_delete ;; 
-    23) ssh_restriction ;;
-    24) flush_nftables ;;
-    25) redirection_udp_dns ;;
-    26) restrict_Internet ;;
-    27) permanent_nft ;;
-    *) echo "Wrong selection input"
-        continue ;;
-  esac
-done
-
+    echo "
+        -------------------------------------------------------------------
+    "
+    menu
+    read -p "Enter your choice: " choice
+    case $choice in
+        1) nftables_menu ;;
+        2) dns_menu ;;
+        3) set_ip_menu ;;
+        4) ip_route_menu ;;
+        5) firewall_rules_menu ;;
+        6) change_hostname ;;
+        7) exit 1 ;;
+        *) echo "Wrong selection input"
+            continue ;;
+    esac
+  done
+}
+main_menu
