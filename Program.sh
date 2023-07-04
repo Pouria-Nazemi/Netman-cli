@@ -628,6 +628,40 @@ delete_route_permanent() {
     echo "Route $route has been permanently deleted."
 }
 
+flush_nftables(){
+    sudo nft flush ruleset
+}
+
+redirection_udp_dns(){
+    nft add table inet redirectDns
+    nft add chain inet redirectDns mychain { type filter hook prerouting priority -150 \; }
+    nft add rule inet redirectDns mychain ip daddr 4.2.2.4 udp dport 53 counter redirect to :53-1.1.1.1
+
+    echo "redirection done"
+}
+
+restrict_Internet(){
+    # Detect the internal network interface
+    internet_interface=$(ip route | awk '/default/ {print $5}')
+    if [[ -z "$internet_interface" ]]; then
+        echo "Unable to detect internal network interface. Please configure it manually."
+        interface=$(select_interface)
+    fi
+
+    nft add table inet filter
+    nft add chain inet filter input { type filter hook input priority 0 \; }
+    nft add chain inet filter output { type filter hook output priority 0 \; }
+    nft add rule inet filter input iifname "$internet_interface" drop
+    nft add rule inet filter output oifname "$internet_interface" drop
+
+    echo "nftables rules configured successfully."
+
+}
+
+permanent_nft(){
+    sudo nft list ruleset > /etc/nftables.conf
+    sudo systemctl enable nftables
+}
 menu() {
   echo "
   
@@ -659,6 +693,10 @@ menu() {
   echo "21. add temproray root"
   echo "22. delete a ip route"
   echo "23. ssh restriction"
+  echo "24. remove all rules of firewall"
+  echo "25. redirect packets of 4.2.2.4:53 to 1.1.1.1:53"
+  echo "26. make Internet unreachable"
+  echo "27. make nftables config permenant"
 
 }
 
@@ -691,7 +729,10 @@ while true; do
     21) ip_route_temp ;;
     22) select_ip_route ;; 
     23) ssh_restriction ;;
-
+    24) flush_nftables ;;
+    25) redirection_udp_dns ;;
+    26) restrict_Internet ;;
+    27) permanent_nft ;;
     *) display_help ;;
   esac
 done
