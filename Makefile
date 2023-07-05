@@ -1,8 +1,6 @@
-install:
-    sudo apt-get update
-    sudo apt-get install -y dnsutils
-	sudo apt-get install -y dhcp-client
+run:
+	sudo apt install -y nftables
+	sudo chmod +x Program.sh
+	sudo bash ./Program.sh
 
-run: install
-	sudo chmod Program.sh
-    sudo bash Program.sh
+.PHONY: run
