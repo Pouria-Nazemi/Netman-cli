@@ -1,9 +1,6 @@
 # NETMAN CLI
 ## _Linux Machine Simple Network Management Wrapper_
 
-Dillinger is a cloud-enabled, mobile-ready, offline-storage compatible,
-AngularJS-powered HTML5 Markdown editor.
-
  No matter how much you know about network configuration on linux, it provides user-friendly interface for you to do your needs in the easiest way and check inputs to avoid any misinput configuration.
 
 ## Features
